@@ -1,0 +1,28 @@
+# ── Multi-Agent LLMs ──
+langchain-groq
+langchain-google-genai
+langchain-core
+
+# ── LlamaIndex (Retrieval) ──
+llama-index-core
+llama-index-vector-stores-chroma
+llama-index-embeddings-huggingface
+llama-index-retrievers-bm25
+
+# ── Vector DB ──
+chromadb
+
+# ── Reranker (API — no local model) ──
+cohere
+
+# ── Embedding model runtime ──
+sentence-transformers
+torch
+
+# ── NLP ──
+underthesea
+
+# ── Utilities ──
+pyyaml
+beautifulsoup4
+python-dotenv
