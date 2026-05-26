@@ -3,6 +3,8 @@ import re
 import os
 import glob
 import json
+import argparse
+from pathlib import Path
 try:
     from bs4 import BeautifulSoup
 except ImportError:
@@ -157,19 +159,24 @@ def clean_markdown(content):
     content = re.sub(r'\n{3,}', '\n\n', content)
     return content.strip()
 
-def convert_odt_to_md(input_file):
-    output_file = input_file.replace('/raw/', '/markdown/').replace('.odt', '.md')
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def convert_odt_to_md(input_file, output_dir=None):
+    input_path = Path(input_file)
+    output_root = Path(output_dir) if output_dir else input_path.parent.parent / "markdown"
+    output_file = output_root / f"{input_path.stem}.md"
+    os.makedirs(output_file.parent, exist_ok=True)
 
     # 1. Convert ODT to HTML
     try:
-        html_p = subprocess.run(['pandoc', input_file, '-t', 'html', '--wrap=none'], capture_output=True, text=True, check=True)
+        html_p = subprocess.run(['pandoc', str(input_path), '-t', 'html', '--wrap=none'], capture_output=True, text=True, check=True)
         html_src = html_p.stdout
     except: return
 
     # 2. Extract Metadata & Process Tables
     meta = extract_metadata(html_src)
-    meta['source'] = os.path.basename(input_file)
+    meta['source'] = input_path.name
     
     if BeautifulSoup:
         soup = BeautifulSoup(html_src, 'html.parser')
@@ -182,7 +189,7 @@ def convert_odt_to_md(input_file):
     try:
         tmp = f"{output_file}.tmp.html"
         with open(tmp, 'w', encoding='utf-8') as f: f.write(processed_html)
-        subprocess.run(['pandoc', tmp, '-t', 'gfm', '--wrap=none', '-o', output_file], check=True)
+        subprocess.run(['pandoc', tmp, '-t', 'gfm', '--wrap=none', '-o', str(output_file)], check=True)
         os.remove(tmp)
     except: return
 
@@ -199,8 +206,14 @@ def convert_odt_to_md(input_file):
 
     with open(output_file, 'w', encoding='utf-8') as f:
         f.write(fm + md)
-    print(f"Successfully processed: {os.path.basename(output_file)}")
+    print(f"Successfully processed: {output_file.name}")
 
 if __name__ == "__main__":
-    files = glob.glob("/home/jason/Projects/Personal/VietLegal-RAG/data/raw/*.odt")
-    for f in files: convert_odt_to_md(f)
+    parser = argparse.ArgumentParser(description="Convert raw ODT legal documents to Markdown.")
+    parser.add_argument("--input-dir", default=str(ROOT / "data" / "raw"))
+    parser.add_argument("--output-dir", default=str(ROOT / "data" / "markdown"))
+    args = parser.parse_args()
+
+    files = glob.glob(str(Path(args.input_dir) / "*.odt"))
+    for f in files:
+        convert_odt_to_md(f, output_dir=args.output_dir)
