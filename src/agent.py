@@ -479,6 +479,11 @@ def _message_content_to_text(content) -> str:
     return str(content)
 
 
+def _sanitize_generated_text(text: str) -> str:
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    return text
+
+
 def generate(query: str, context: str, query_type: str) -> str:
     """Generator synthesizes a legal answer from retrieved documents."""
     if query_type == "out_of_scope":
@@ -497,7 +502,7 @@ def generate(query: str, context: str, query_type: str) -> str:
         SystemMessage(content=_GENERATOR_SYSTEM),
         HumanMessage(content=user_prompt),
     ])
-    return _message_content_to_text(response.content)
+    return _sanitize_generated_text(_message_content_to_text(response.content))
 
 
 def generate_stream(query: str, context: str, query_type: str) -> Iterator[str]:
@@ -520,7 +525,7 @@ def generate_stream(query: str, context: str, query_type: str) -> Iterator[str]:
     ]):
         text = _message_content_to_text(chunk.content)
         if text:
-            yield text
+            yield _sanitize_generated_text(text)
 
 
 def run_query_pipeline(query: str, retrieval_only: bool = False) -> Dict:
