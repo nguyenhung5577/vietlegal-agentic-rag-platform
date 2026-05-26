@@ -188,4 +188,12 @@ MAX_CPU_CORES=12
 
 ## Screenshots
 
-Screenshots and example answers are useful for a portfolio README, but they should be added only after the public Space UI is stable. A good next step is to add `assets/screenshot-home.png` and one short example answer section.
+### Web UI
+
+![VietLegal RAG web UI](assets/UI.png)
+
+### Example Answer
+
+![VietLegal RAG example answer part 1](assets/Answer1.png)
+
+![VietLegal RAG example answer part 2](assets/Answer2.png)
