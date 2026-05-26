@@ -1,8 +1,12 @@
 import os
 import re
 import yaml
-from typing import List, Dict, Optional
+from typing import Dict, List
 from dataclasses import dataclass, asdict
+
+
+MAX_NODE_CHARS = 1800
+
 
 @dataclass
 class LegalNode:
@@ -10,253 +14,294 @@ class LegalNode:
     metadata: Dict
     article_id: str
 
+
+def _safe_id(value: str) -> str:
+    value = re.sub(r"\s+", "_", value.strip())
+    return re.sub(r"[^0-9A-Za-zÀ-ỹ_/-]+", "_", value).replace("/", "_")
+
+
 class HierarchicalLegalIngestor:
     def __init__(self, input_dir: str):
         self.input_dir = input_dir
-        # Regex for Chapters, Articles, and Clauses
-        self.chapter_pattern = re.compile(r'^## (Chương .+)$', re.MULTILINE)
-        self.article_pattern = re.compile(r'^(?:### |\*\*)(Điều \d+\..+?)(?:\*\*|)$', re.MULTILINE)
-        self.clause_pattern = re.compile(r'\n(\d+\.|[a-z]\))\s')
-        # Regex for Appendices (plain-text headers, no ## prefix)
-        self.phuluc_pattern = re.compile(r'^(PHỤ LỤC\s+[IVX]+[^\n]*)', re.MULTILINE)
-        # Mục A./B./C. lines — capture the full line
-        self.muc_pattern = re.compile(r'^([A-Z]\.\s+[^\n]+)', re.MULTILINE)
+        self.chapter_pattern = re.compile(r"^##\s+(Chương\s+.+)$", re.MULTILINE | re.IGNORECASE)
+        self.article_pattern = re.compile(
+            r"^(?:###\s+|\*\*)(Điều\s+\d+\..+?)(?:\*\*)?$",
+            re.MULTILINE | re.IGNORECASE,
+        )
+        self.clause_pattern = re.compile(r"\n(\d+\.|[a-zđ]\))\s", re.IGNORECASE)
+        self.phuluc_pattern = re.compile(r"^(PHỤ LỤC\s+[IVXLCDM]+[^\n]*)", re.MULTILINE | re.IGNORECASE)
+        self.table_row_pattern = re.compile(r"^Theo mục\s+'(.+?)'.*?có các thông tin chi tiết sau:\s*(.+)$", re.DOTALL)
+        self.section_pattern = re.compile(r"^([A-ZĐ]\.\s+.+|\d+\.\s+.+|[IVXLCDM]+\.\s+.+)$")
 
     def _extract_doc_title(self, content: str, frontmatter: dict) -> str:
-        """Extract human-readable title like 'Luật Doanh nghiệp 2020' from heading."""
-        doc_num = frontmatter.get('number', '')
-        issued_date = frontmatter.get('issued_date', '')
-        year = issued_date[:4] if issued_date else ''
+        doc_num = frontmatter.get("number", "")
+        issued_date = frontmatter.get("issued_date", "")
+        year = issued_date[:4] if issued_date else ""
 
-        match = re.search(r'^#\s+(LUẬT|NGHỊ ĐỊNH|THÔNG TƯ|QUYẾT ĐỊNH)\s*$\n+\s*(.+?)$', content, re.MULTILINE)
+        match = re.search(
+            r"^#\s+(LUẬT|NGHỊ ĐỊNH|THÔNG TƯ|QUYẾT ĐỊNH)\s*$\n+\s*(.+?)$",
+            content,
+            re.MULTILINE,
+        )
         if match:
             doc_type = match.group(1).strip()
             doc_name = match.group(2).strip()
-
             if doc_type == "LUẬT":
                 title = f"Luật {doc_name.capitalize()}"
                 return f"{title} {year}" if year else title
-            else:
-                type_name = doc_type.capitalize()
-                return f"{type_name} {doc_num}" if doc_num else type_name
+            return f"{doc_type.capitalize()} {doc_num}" if doc_num else doc_type.capitalize()
 
         return f"Văn bản {doc_num}"
 
     def parse_file(self, file_path: str) -> List[LegalNode]:
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
 
-        # Extract frontmatter
         frontmatter = {}
-        if content.startswith('---'):
-            parts = content.split('---', 2)
+        if content.startswith("---"):
+            parts = content.split("---", 2)
             if len(parts) >= 3:
-                frontmatter = yaml.safe_load(parts[1])
+                frontmatter = yaml.safe_load(parts[1]) or {}
                 main_content = parts[2]
+            else:
+                main_content = content
         else:
             main_content = content
 
-        nodes = []
-        doc_num = frontmatter.get('number', 'Unknown')
+        doc_num = frontmatter.get("number", "Unknown")
         doc_title = self._extract_doc_title(main_content, frontmatter)
-        frontmatter['title'] = doc_title
-        
-        # Split by Chapter
-        chapters = self._split_with_headers(main_content, self.chapter_pattern)
-        
-        for chap_title, chap_content in chapters:
-            # Split Chapter by Article
-            articles = self._split_with_headers(chap_content, self.article_pattern)
-            
-            for art_title, art_content in articles:
-                # Clean Article Title for ID
-                art_match = re.search(r'Điều (\d+)', art_title)
-                art_num = art_match.group(1) if art_match else "unknown"
-                article_id = f"{doc_num}_A{art_num}".replace('/', '_')
-                
-                # Further split into Clauses if necessary (simple heuristic: length > 1000)
-                if len(art_content) > 1000:
-                    clauses = self._split_by_clauses(art_content)
-                    for i, clause_text in enumerate(clauses):
-                        contextual_text = f"[{doc_title} ({doc_num})] [{chap_title}] [{art_title}] \n{clause_text.strip()}"
-                        unique_id = f"{article_id}_C{i+1}"
-                        
-                        metadata = {
-                            **frontmatter,
-                            "chapter": chap_title,
-                            "article": art_title,
-                            "clause_idx": i + 1,
-                            "article_id": article_id,  # Keep the base article_id for logical grouping
-                            "cross_references": ";".join(self._extract_references(clause_text))
-                        }
-                        nodes.append(LegalNode(text=contextual_text, metadata=metadata, article_id=unique_id))
-                else:
-                    contextual_text = f"[{doc_title} ({doc_num})] [{chap_title}] [{art_title}] \n{art_content.strip()}"
-                    unique_id = f"{article_id}_C0"
+        frontmatter["title"] = doc_title
+
+        legal_body, appendix_body = self._split_legal_body_and_appendices(main_content)
+        nodes = self._parse_articles(legal_body, frontmatter, doc_num, doc_title)
+        nodes.extend(self._parse_phuluc(appendix_body, frontmatter, doc_num, doc_title))
+        return nodes
+
+    def _split_legal_body_and_appendices(self, content: str) -> tuple[str, str]:
+        first_appendix = self.phuluc_pattern.search(content)
+        if not first_appendix:
+            return content, ""
+        return content[: first_appendix.start()].rstrip(), content[first_appendix.start() :].lstrip()
+
+    def _parse_articles(self, content: str, frontmatter: dict, doc_num: str, doc_title: str) -> List[LegalNode]:
+        nodes = []
+        for chap_title, chap_content in self._split_with_headers(content, self.chapter_pattern):
+            for art_title, art_content in self._split_with_headers(chap_content, self.article_pattern):
+                art_match = re.search(r"Điều\s+(\d+)", art_title, re.IGNORECASE)
+                if not art_match:
+                    continue
+
+                art_num = art_match.group(1)
+                base_id = _safe_id(f"{doc_num}_A{art_num}")
+                chunks = self._split_article_content(art_content)
+
+                for i, chunk_text in enumerate(chunks, start=1):
+                    if not chunk_text.strip():
+                        continue
+                    contextual_text = f"[{doc_title} ({doc_num})] [{chap_title}] [{art_title}]\n{chunk_text.strip()}"
                     metadata = {
                         **frontmatter,
                         "chapter": chap_title,
                         "article": art_title,
-                        "article_id": article_id,
-                        "cross_references": ";".join(self._extract_references(art_content))
+                        "article_number": art_num,
+                        "clause_idx": i,
+                        "article_id": base_id,
+                        "chunk_type": "article",
+                        "cross_references": ";".join(self._extract_references(chunk_text)),
                     }
-                    nodes.append(LegalNode(text=contextual_text, metadata=metadata, article_id=unique_id))
-        
-        # Parse Appendices (Phụ lục) — plain-text sections ignored by chapter/article parser
-        nodes.extend(self._parse_phuluc(main_content, frontmatter, doc_num, doc_title))
-
+                    nodes.append(LegalNode(text=contextual_text, metadata=metadata, article_id=f"{base_id}_C{i}"))
         return nodes
 
+    def _split_article_content(self, text: str) -> List[str]:
+        if len(text) <= MAX_NODE_CHARS:
+            return [text]
+
+        clauses = self._split_by_clauses(text)
+        chunks = []
+        for clause in clauses:
+            chunks.extend(self._split_long_text(clause, MAX_NODE_CHARS))
+        return chunks
+
     def _parse_phuluc(self, content: str, frontmatter: dict, doc_num: str, doc_title: str) -> List[LegalNode]:
-        """Parse Phụ lục sections (PHỤ LỤC I, II, ...) that use plain-text headers."""
         nodes = []
-        pl_matches = list(self.phuluc_pattern.finditer(content))
-        if not pl_matches:
+        if not content.strip():
             return nodes
 
+        pl_matches = list(self.phuluc_pattern.finditer(content))
         for i, pl_match in enumerate(pl_matches):
             pl_title = pl_match.group(1).strip()
             pl_start = pl_match.end()
             pl_end = pl_matches[i + 1].start() if i + 1 < len(pl_matches) else len(content)
             pl_body = content[pl_start:pl_end].strip()
 
-            # Build a safe ID token: "PHỤ LỤC I" → "PLUC_I", "PHỤ LỤC II" → "PLUC_II"
-            roman = re.search(r'[IVX]+', pl_title)
-            pl_id_token = f"PLUC_{roman.group(0)}" if roman else "PLUC"
+            roman = re.search(r"PHỤ LỤC\s+([IVXLCDM]+)", pl_title, re.IGNORECASE)
+            pl_token = f"PLUC_{roman.group(1)}" if roman else f"PLUC_{i + 1}"
+            units = self._split_appendix_units(pl_body)
 
-            # Split by Mục (A., B., C. ...)
-            muc_matches = list(self.muc_pattern.finditer(pl_body))
-
-            if not muc_matches:
-                # No Mục sub-division — index the whole appendix as one node
-                article_id = f"{doc_num}_{pl_id_token}".replace('/', '_')
-                text = f"[{doc_title} ({doc_num})] [{pl_title}]\n{pl_body}"
+            for j, unit in enumerate(units, start=1):
+                unit_title = self._appendix_unit_title(unit, j)
+                base_id = _safe_id(f"{doc_num}_{pl_token}_U{j:04d}")
+                text = f"[{doc_title} ({doc_num})] [{pl_title}] [{unit_title}]\n{unit.strip()}"
                 metadata = {
                     **frontmatter,
                     "chapter": pl_title,
-                    "article": pl_title,
-                    "article_id": article_id,
+                    "article": f"{pl_title} - {unit_title}",
+                    "appendix": pl_title,
+                    "article_id": base_id,
+                    "chunk_type": "appendix",
                     "cross_references": "",
                 }
-                nodes.append(LegalNode(text=text, metadata=metadata, article_id=f"{article_id}_C0"))
-            else:
-                for j, muc_match in enumerate(muc_matches):
-                    muc_title = muc_match.group(1).strip()
-                    muc_start = muc_match.end()
-                    muc_end = muc_matches[j + 1].start() if j + 1 < len(muc_matches) else len(pl_body)
-                    muc_body = pl_body[muc_start:muc_end].strip()
-
-                    article_id = f"{doc_num}_{pl_id_token}_MUC_{j+1}".replace('/', '_')
-                    article_label = f"{pl_title} - {muc_title}"
-
-                    text = f"[{doc_title} ({doc_num})] [{pl_title}] [{muc_title}]\n{muc_body}"
-                    metadata = {
-                        **frontmatter,
-                        "chapter": pl_title,
-                        "article": article_label,
-                        "article_id": article_id,
-                        "cross_references": "",
-                    }
-                    nodes.append(LegalNode(text=text, metadata=metadata, article_id=f"{article_id}_C0"))
+                nodes.append(LegalNode(text=text, metadata=metadata, article_id=f"{base_id}_C0"))
 
         return nodes
 
+    def _split_appendix_units(self, text: str) -> List[str]:
+        paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+        units: List[str] = []
+        buffer: List[str] = []
+
+        def flush_buffer():
+            if buffer:
+                units.extend(self._split_long_text("\n\n".join(buffer), MAX_NODE_CHARS))
+                buffer.clear()
+
+        for paragraph in paragraphs:
+            if paragraph.startswith("Theo mục"):
+                flush_buffer()
+                units.extend(self._split_long_text(paragraph, MAX_NODE_CHARS))
+                continue
+
+            first_line = paragraph.splitlines()[0].strip()
+            starts_section = bool(self.section_pattern.match(first_line))
+            if starts_section and buffer:
+                flush_buffer()
+
+            if sum(len(p) for p in buffer) + len(paragraph) > MAX_NODE_CHARS:
+                flush_buffer()
+            buffer.append(paragraph)
+
+        flush_buffer()
+        return units
+
+    def _appendix_unit_title(self, text: str, idx: int) -> str:
+        table_match = self.table_row_pattern.match(text)
+        if table_match:
+            return table_match.group(1).strip()[:120]
+
+        for line in text.splitlines():
+            clean = line.strip(" *")
+            if clean:
+                return clean[:120]
+        return f"Mục {idx}"
+
     def _split_with_headers(self, text: str, pattern: re.Pattern) -> List[tuple]:
-        """Splits text and keeps the headers."""
         matches = list(pattern.finditer(text))
         if not matches:
-            return [("Nội dung không phân chương/điều", text)]
-        
+            return [("Nội dung không phân chương", text)]
+
         results = []
-        for i in range(len(matches)):
-            start = matches[i].start()
-            end = matches[i+1].start() if i+1 < len(matches) else len(text)
-            header = matches[i].group(1)
-            content = text[matches[i].end():end]
-            results.append((header, content))
+        for i, match in enumerate(matches):
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+            header = match.group(1).strip()
+            body = text[match.end() : end].strip()
+            results.append((header, body))
         return results
 
     def _split_by_clauses(self, text: str) -> List[str]:
-        """Splits article content into clauses."""
         parts = self.clause_pattern.split(text)
-        # parts will contain [intro, "1.", clause1, "2.", clause2, ...]
         if len(parts) < 2:
             return [text]
-        
-        clauses = [parts[0]] # Include the intro of the article
+
+        clauses = []
+        intro = parts[0].strip()
+        if intro:
+            clauses.append(intro)
+
         for i in range(1, len(parts), 2):
             marker = parts[i]
-            body = parts[i+1] if i+1 < len(parts) else ""
-            clauses.append(f"{marker} {body}")
-        return [c for c in clauses if c.strip()]
+            body = parts[i + 1] if i + 1 < len(parts) else ""
+            clause = f"{marker} {body}".strip()
+            if clause:
+                clauses.append(clause)
+        return clauses
+
+    def _split_long_text(self, text: str, max_chars: int) -> List[str]:
+        if len(text) <= max_chars:
+            return [text]
+
+        parts = [p.strip() for p in re.split(r"\n+", text) if p.strip()]
+        chunks = []
+        current = ""
+        for part in parts:
+            if len(part) > max_chars:
+                if current:
+                    chunks.append(current)
+                    current = ""
+                chunks.extend(part[i : i + max_chars] for i in range(0, len(part), max_chars))
+                continue
+
+            candidate = f"{current}\n{part}".strip() if current else part
+            if len(candidate) > max_chars:
+                chunks.append(current)
+                current = part
+            else:
+                current = candidate
+
+        if current:
+            chunks.append(current)
+        return chunks
 
     def _extract_references(self, text: str) -> List[str]:
-        """Extracts and canonicalizes references like 'Điều 5 Nghị định 168'."""
         refs = []
-        # Mapping common names to doc numbers for better linking
         doc_map = {
             "Luật Doanh nghiệp": "59/2020/QH14",
             "Nghị định 31": "31/2021/NĐ-CP",
             "Nghị định 168": "168/2025/NĐ-CP",
             "Nghị định 153": "153/2020/NĐ-CP",
-            "Luật Đầu tư": "61/2020/QH14"
+            "Luật Đầu tư": "143/2025/QH15",
         }
-        
-        # 1. Pattern for specific articles: Điều [Số] [Loại văn bản] [Số hiệu/Tên]
-        pattern = re.compile(r'Điều (\d+)(?:\s+(?:của\s+)?(?:Nghị định|Luật|Văn bản|Thông tư)\s+([\w\s\d/.\-]+))?')
-        
+
+        pattern = re.compile(
+            r"Điều\s+(\d+)(?:\s+(?:của\s+)?(?:Nghị định|Luật|Văn bản|Thông tư)\s+([\w\s\d/.\-Đđ]+))?",
+            re.IGNORECASE,
+        )
         for match in pattern.finditer(text):
             art_num = match.group(1)
             doc_ref_raw = match.group(2)
-            
             doc_id = "CURRENT"
             if doc_ref_raw:
                 doc_ref = doc_ref_raw.strip()
-                # Try to map common names
-                found = False
                 for name, num in doc_map.items():
                     if name.lower() in doc_ref.lower():
                         doc_id = num
-                        found = True
                         break
-                if not found:
-                    # Try to extract a number-like pattern if no name match
-                    num_match = re.search(r'(\d+/\d+/[A-Z\-]+)', doc_ref)
-                    if num_match:
-                        doc_id = num_match.group(1)
-                    else:
-                        doc_id = doc_ref # Fallback to raw text
-            
-            refs.append(f"{doc_id}_A{art_num}".replace('/', '_').replace('.', '_'))
+                else:
+                    num_match = re.search(r"(\d+/\d+/[A-ZĐ\-]+)", doc_ref)
+                    doc_id = num_match.group(1) if num_match else doc_ref
+            refs.append(_safe_id(f"{doc_id}_A{art_num}"))
 
-        # 2. Pattern for general document references (e.g., "theo quy định của Luật Đầu tư")
-        # Only extract if it's one of our known documents to avoid noise
         for doc_name, doc_id in doc_map.items():
             if doc_name.lower() in text.lower():
-                # Add a general reference to the document (no specific article)
                 refs.append(doc_id)
-                
+
         return list(set(refs))
+
 
 def main():
     import json
+
     ingestor = HierarchicalLegalIngestor("data/markdown")
     all_nodes = []
-    
-    # Process files
     for filename in os.listdir("data/markdown"):
         if filename.endswith(".md"):
             print(f"Processing {filename}...")
-            nodes = ingestor.parse_file(os.path.join("data/markdown", filename))
-            all_nodes.extend(nodes)
-            
+            all_nodes.extend(ingestor.parse_file(os.path.join("data/markdown", filename)))
+
     print(f"Total chunks created: {len(all_nodes)}")
-    
-    # In a real scenario, we would now pipe these nodes to LlamaIndex persistence.
-    # For now, let's output a summary or first few nodes to verify.
     output_sample = [asdict(n) for n in all_nodes[:5]]
     with open("data/ingested_sample.json", "w", encoding="utf-8") as f:
         json.dump(output_sample, f, ensure_ascii=False, indent=2)
+
 
 if __name__ == "__main__":
     main()

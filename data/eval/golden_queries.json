@@ -1,0 +1,38 @@
+[
+  {
+    "id": "dn_article_17",
+    "query": "Điều 17 Luật Doanh nghiệp 2020 quy định về điều gì?",
+    "expected_numbers": ["59/2020/QH14"],
+    "expected_articles": ["Điều 17"]
+  },
+  {
+    "id": "dn_registration_article_26",
+    "query": "Trình tự thủ tục đăng ký doanh nghiệp theo Điều 26 Luật Doanh nghiệp 2020",
+    "expected_numbers": ["59/2020/QH14"],
+    "expected_articles": ["Điều 26"]
+  },
+  {
+    "id": "investment_market_access",
+    "query": "Điều kiện tiếp cận thị trường đối với nhà đầu tư nước ngoài theo Luật Đầu tư 2025",
+    "expected_numbers": ["143/2025/QH15"],
+    "expected_articles": ["Điều 8"]
+  },
+  {
+    "id": "foreign_investor_capital_contribution",
+    "query": "Nhà đầu tư nước ngoài góp vốn mua cổ phần cần đáp ứng điều kiện gì?",
+    "expected_numbers": ["143/2025/QH15", "31/2021/NĐ-CP"],
+    "expected_articles": ["Điều 24", "Điều 65", "Điều 66"]
+  },
+  {
+    "id": "appendix_restricted_market",
+    "query": "Phụ lục I Nghị định 31 danh mục ngành nghề hạn chế tiếp cận thị trường đối với nhà đầu tư nước ngoài",
+    "expected_numbers": ["31/2021/NĐ-CP"],
+    "expected_articles": ["PHỤ LỤC I"]
+  },
+  {
+    "id": "enterprise_registration_decree",
+    "query": "Nghị định 168/2025 quy định hồ sơ đăng ký doanh nghiệp như thế nào?",
+    "expected_numbers": ["168/2025/NĐ-CP"],
+    "expected_articles": ["đăng ký doanh nghiệp"]
+  }
+]

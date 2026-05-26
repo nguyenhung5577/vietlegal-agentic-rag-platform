@@ -26,3 +26,4 @@ underthesea
 pyyaml
 beautifulsoup4
 python-dotenv
+streamlit

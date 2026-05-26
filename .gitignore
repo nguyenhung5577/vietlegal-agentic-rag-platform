@@ -11,6 +11,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.cache/
 
 .DS_Store
 Thumbs.db
@@ -20,3 +21,4 @@ bm25_index.json
 data/ingested_sample.json
 
 *.log
+streamlit.log

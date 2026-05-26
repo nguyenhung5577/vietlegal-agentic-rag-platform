@@ -1,50 +1,62 @@
 import os
+import sys
 import json
+from pathlib import Path
 import chromadb
-from typing import List
-from llama_index.core import VectorStoreIndex, StorageContext, Document, load_index_from_storage
+
+if __package__ is None or __package__ == "":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from llama_index.core import VectorStoreIndex, StorageContext
 from llama_index.core.schema import TextNode
 from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-from llama_index.core.retrievers import VectorIndexRetriever, BaseRetriever
-from llama_index.retrievers.bm25 import BM25Retriever
-from llama_index.core.query_engine import RetrieverQueryEngine
+from llama_index.core.retrievers import BaseRetriever
 
 import torch
 
 from src.ingest import HierarchicalLegalIngestor
 import src.config as config
 
+os.environ.setdefault("HF_HOME", str(Path(config.MODEL_CACHE_DIR).parent / "huggingface"))
+os.environ.setdefault("TRANSFORMERS_CACHE", config.MODEL_CACHE_DIR)
+os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", config.MODEL_CACHE_DIR)
+
 class LegalIndexBuilder:
-    def __init__(self):
-        # Initialize BGE-M3 (Standard HuggingFace)
-        # Optimized for CPU:
-        # 1. Batch size 8 (Standard 32 is too high for CPU cache)
-        # 2. bfloat16 (Faster on modern CPUs like Intel/AMD)
-        # 3. Explicit thread control
-        
+    def __init__(self, rebuild: bool = False):
+        # CPU-friendly HuggingFace embedding setup.
         print(f"Loading embedding model: {config.EMBEDDING_MODEL_NAME}...")
         
         # Performance tuning for CPU
-        num_cores = config.MAX_CPU_CORES if hasattr(config, 'MAX_CPU_CORES') else (os.cpu_count() or 8)
+        num_cores = min(config.MAX_CPU_CORES, os.cpu_count() or config.MAX_CPU_CORES)
         torch.set_num_threads(num_cores)
-        print(f"Optimizing for CPU with {num_cores} threads and BF16 (if supported)...")
+        try:
+            torch.set_num_interop_threads(max(1, num_cores // 2))
+        except RuntimeError:
+            pass
+        print(
+            "Optimizing embedding for CPU: "
+            f"{num_cores} torch threads, batch size {config.EMBED_BATCH_SIZE}"
+        )
         
-        # Check if BF16 is supported (faster on modern CPUs)
         device = "cpu"
-        # BF16 is usually safe and fast on newer CPUs, but let's stick to float32 if unsure
-        # or use bfloat16 for a speed boost
-        torch_dtype = torch.bfloat16 if torch.cuda.is_available() or hasattr(torch.cpu, 'is_bf16_supported') and torch.cpu.is_bf16_supported() else torch.float32
 
         self.embed_model = HuggingFaceEmbedding(
             model_name=config.EMBEDDING_MODEL_NAME,
-            embed_batch_size=8, # Reduced for CPU stability
+            embed_batch_size=config.EMBED_BATCH_SIZE,
             device=device,
-            model_kwargs={"torch_dtype": torch_dtype}
+            cache_folder=config.MODEL_CACHE_DIR,
+            model_kwargs={"torch_dtype": torch.float32},
         )
         
         # Setup ChromaDB — use inner product (dot product) to match Vietnamese_Embedding similarity function
         self.db = chromadb.PersistentClient(path=config.CHROMA_DB_PATH)
+        if rebuild:
+            try:
+                self.db.delete_collection("viet_legal_rag")
+                print("Deleted existing Chroma collection: viet_legal_rag")
+            except Exception:
+                print("No existing Chroma collection to delete.")
         self.chroma_collection = self.db.get_or_create_collection(
             "viet_legal_rag",
             metadata={"hnsw:space": "ip"},  # ip = inner product (dot product)
@@ -125,18 +137,30 @@ class HybridRetriever(BaseRetriever):
         vector_nodes = self.vector_retriever.retrieve(query_bundle)
         bm25_nodes = self.bm25_retriever.retrieve(query_bundle)
 
-        # Merge results (simple union with scores for now)
-        all_nodes = {}
-        for node in vector_nodes:
-            all_nodes[node.node.id_] = node
-        for node in bm25_nodes:
-            if node.node.id_ not in all_nodes:
-                all_nodes[node.node.id_] = node
-                
-        return list(all_nodes.values())
+        fused = {}
+        rrf_k = 60
+
+        for source_weight, nodes in (
+            (config.HYBRID_VECTOR_WEIGHT, vector_nodes),
+            (config.HYBRID_BM25_WEIGHT, bm25_nodes),
+        ):
+            for rank, node in enumerate(nodes, start=1):
+                node_id = node.node.id_
+                if node_id not in fused:
+                    fused[node_id] = node
+                    fused[node_id].score = 0.0
+                fused[node_id].score += source_weight / (rrf_k + rank)
+
+        return sorted(fused.values(), key=lambda n: n.score or 0.0, reverse=True)
 
 def main():
-    builder = LegalIndexBuilder()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Build VietLegal vector and BM25 indexes.")
+    parser.add_argument("--rebuild", action="store_true", help="Delete the Chroma collection before indexing.")
+    args = parser.parse_args()
+
+    builder = LegalIndexBuilder(rebuild=args.rebuild)
     builder.build_and_save()
 
 if __name__ == "__main__":
