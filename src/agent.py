@@ -333,6 +333,36 @@ def _build_supplemental_queries(user_query: str, plan: Dict, results: list[Dict]
     return deduped[:3]
 
 
+def _build_topic_shortcut_queries(user_query: str) -> list[str]:
+    normalized = _normalize_for_match(user_query)
+    mentions_llc = "tnhh" in normalized or "trach nhiem huu han" in normalized
+    mentions_jsc = "cong ty co phan" in normalized or "co dong" in normalized
+    asks_comparison = any(
+        term in normalized
+        for term in ("khac", "so sanh", "doi chieu", "thanh vien", "co dong", "chuyen nhuong")
+    )
+
+    if mentions_llc and mentions_jsc and asks_comparison:
+        return [
+            "Điều 46 Luật Doanh nghiệp 2020 công ty trách nhiệm hữu hạn hai thành viên trở lên",
+            "Điều 47 Luật Doanh nghiệp 2020 góp vốn thành lập công ty trách nhiệm hữu hạn",
+            "Điều 52 Luật Doanh nghiệp 2020 chuyển nhượng phần vốn góp",
+            "Điều 111 Luật Doanh nghiệp 2020 công ty cổ phần",
+            "Điều 115 Luật Doanh nghiệp 2020 quyền của cổ đông phổ thông",
+            "Điều 127 Luật Doanh nghiệp 2020 chuyển nhượng cổ phần",
+        ]
+
+    if "chuyen doi" in normalized and mentions_llc and "co phan" in normalized:
+        return [
+            "Điều 202 Luật Doanh nghiệp 2020 chuyển đổi công ty trách nhiệm hữu hạn thành công ty cổ phần",
+            "Điều 111 Luật Doanh nghiệp 2020 công ty cổ phần",
+            "Điều 127 Luật Doanh nghiệp 2020 chuyển nhượng cổ phần",
+            "Điều 120 Luật Doanh nghiệp 2020 cổ phần phổ thông của cổ đông sáng lập",
+        ]
+
+    return []
+
+
 def retrieve(plan: Dict, user_query: str = "") -> str:
     """Execute retrieval based on the orchestrator's plan."""
     retriever = get_retriever()
@@ -343,6 +373,21 @@ def retrieve(plan: Dict, user_query: str = "") -> str:
         plan["search_queries_truncated"] = plan["search_queries"][len(queries):]
         plan["search_queries"] = queries
     expand = plan.get("expand_links", True)
+
+    shortcut_queries = _build_topic_shortcut_queries(user_query)
+    if shortcut_queries:
+        plan["shortcut_queries"] = shortcut_queries
+        seen = set()
+        shortcut_results = []
+        for q in shortcut_queries:
+            for res in retriever.retrieve(q, expand_links=False):
+                aid = res["metadata"].get("article_id", "")
+                if aid not in seen:
+                    seen.add(aid)
+                    shortcut_results.append(res)
+        if shortcut_results:
+            focus_text = " ".join([user_query, *shortcut_queries])
+            return _format_context(shortcut_results, focus_text)
 
     if query_type == "comparison" and len(queries) >= 2:
         seen = set()

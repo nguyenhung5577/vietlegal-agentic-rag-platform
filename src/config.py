@@ -18,7 +18,7 @@ MODEL_CACHE_DIR = os.getenv("MODEL_CACHE_DIR", str(BASE_DIR / ".cache" / "models
 EMBEDDING_MODEL_NAME = "AITeamVN/Vietnamese_Embedding"
 TOP_K_RETRIEVE = int(os.getenv("TOP_K_RETRIEVE", "50"))
 TOP_K_RERANK = int(os.getenv("TOP_K_RERANK", "20"))
-MAX_SEARCH_QUERIES = int(os.getenv("MAX_SEARCH_QUERIES", "5"))
+MAX_SEARCH_QUERIES = int(os.getenv("MAX_SEARCH_QUERIES", "4"))
 EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "8"))
 EXACT_LOOKUP_SHORT_CIRCUIT = os.getenv("EXACT_LOOKUP_SHORT_CIRCUIT", "true").lower() not in {
     "0",
